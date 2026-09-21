@@ -1,0 +1,53 @@
+# ---------- 本地私有（凭据/笔记，绝不提交） ----------
+.private/
+deploy/secrets/
+*.local.md
+*credentials*.txt
+
+# ---------- Python ----------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.python-version
+
+# ---------- Node / 前端 ----------
+node_modules/
+dist/
+.vite/
+*.local
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ---------- 环境变量（含密码，绝不提交） ----------
+.env
+.env.*
+!.env.example
+
+# ---------- 日志 ----------
+*.log
+logs/
+
+# ---------- 证书 / 密钥 ----------
+*.pem
+*.key
+*.crt
+id_rsa*
+id_ed25519*
+known_hosts*
+
+# ---------- 编辑器 / 系统 ----------
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# ---------- 临时产物 ----------
+*.tmp
+*.bak
+_cache/
