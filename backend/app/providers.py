@@ -667,6 +667,251 @@ def fetch_company_profile(symbol):
     return result
 
 
+# ---------------- 个股新闻 / 公告（东财双源） ----------------
+
+_ANN_HOST = "https://np-anotice-stock.eastmoney.com"
+_SEARCH_HOST = "https://search-api-web.eastmoney.com"
+
+_news_cache = {}            # symbol -> {"ts": float, "data": dict}
+_news_lock = threading.Lock()
+NEWS_TTL = 900              # 15 分钟
+
+
+def _strip_jsonp(text):
+    """去掉 jsonp 的回调包裹：cb({...}) -> {...}"""
+    t = (text or "").strip()
+    i = t.find("(")
+    j = t.rfind(")")
+    if i > 0 and j > i:
+        return t[i + 1:j]
+    return t
+
+
+def _fetch_announcements(sym, page_size=15):
+    """公告列表（按股票代码精确，东财公告库）"""
+    url = (_ANN_HOST + "/api/security/ann?sr=-1&page_size=" + str(page_size)
+           + "&page_index=1&ann_type=A&stock_list=" + sym)
+    r = _get(url, config.HEADERS_EM, "np-anotice-stock.eastmoney.com#ann")
+    rows = (((r.json() or {}).get("data") or {}).get("list")) or []
+    out = []
+    for d in rows:
+        art = d.get("art_code") or ""
+        out.append({
+            "title": (d.get("title_ch") or d.get("title") or "").strip(),
+            "date": (d.get("notice_date") or "")[:10],
+            "url": "https://data.eastmoney.com/notices/detail/%s/%s.html" % (sym, art),
+            "media": "公告",
+        })
+    return out
+
+
+def _fetch_stock_articles(name, sym, page_size=15):
+    """新闻列表（按股票名称关键词搜索东财资讯库，按时间倒序）"""
+    import urllib.parse
+    param = {
+        "uid": "", "keyword": name, "type": ["cmsArticleWebOld"],
+        "client": "web", "clientType": "web", "clientVersion": "curr",
+        "param": {"cmsArticleWebOld": {
+            "searchScope": "default", "sort": "time",
+            "pageIndex": 1, "pageSize": page_size,
+            "preTag": "", "postTag": ""}},
+    }
+    url = (_SEARCH_HOST + "/search/jsonp?cb=cb&param="
+           + urllib.parse.quote(json.dumps(param, ensure_ascii=False)))
+    r = _get(url, config.HEADERS_EM, "search-api-web.eastmoney.com#news")
+    data = json.loads(_strip_jsonp(r.text)) or {}
+    arts = (((data.get("result") or {}).get("cmsArticleWebOld")) or [])
+    out = []
+    for d in arts:
+        title = (d.get("title") or "").strip()
+        content = (d.get("content") or "").strip()
+        # 同名/泛词干扰兜底：标题或正文须含股票名或代码
+        if name and (name not in title and name not in content and sym not in title):
+            continue
+        out.append({
+            "title": title,
+            "summary": content[:120],
+            "date": (d.get("date") or "")[:16],
+            "url": d.get("url") or "",
+            "media": d.get("mediaName") or "资讯",
+        })
+    return out
+
+
+def fetch_stock_news(symbol, name=None, refresh=0):
+    """个股新闻+公告合并视图。缓存 15 分钟/股。"""
+    sym = str(symbol).strip()
+
+    with _news_lock:
+        c = _news_cache.get(sym)
+        if c and not refresh and time.time() - c["ts"] < NEWS_TTL:
+            return c["data"]
+
+    # 股票名称（新闻搜索需要）
+    stock_name = name
+    if not stock_name:
+        try:
+            q = market.quote([sym])["data"]
+            stock_name = q[0].get("name") if q else None
+        except Exception:
+            stock_name = None
+
+    result = {"symbol": sym, "name": stock_name, "news": [], "announcements": []}
+    errs = []
+
+    try:
+        result["announcements"] = _fetch_announcements(sym)
+    except Exception as e:
+        errs.append("ann:" + str(e)[:100])
+
+    if stock_name:
+        try:
+            result["news"] = _fetch_stock_articles(stock_name, sym)
+        except Exception as e:
+            errs.append("news:" + str(e)[:100])
+    else:
+        errs.append("news:no_name")
+
+    result["_err"] = ";".join(errs) if errs else None
+
+    # 双源全挂时若旧缓存仍在则回退
+    with _news_lock:
+        if not result["news"] and not result["announcements"] and c:
+            return c["data"]
+        _news_cache[sym] = {"ts": time.time(), "data": result}
+    return result
+
+
+# ---------------- 行情中心：指数快照 / 个股榜单 ----------------
+
+# 大盘指数 secid：上证指数 / 深证成指 / 创业板指 / 科创50
+_INDEX_SECIDS = "1.000001,0.399001,0.399006,1.000688"
+
+# A 股全市场范围（沪深主板 + 创业板 + 科创板 + 北交所）
+_FS_ALL_A = ("m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81+s:2048")
+
+_rank_cache = {}            # fid -> {"ts": float, "data": list}
+_rank_lock = threading.Lock()
+RANK_TTL = 30               # 榜单 30 秒缓存（盘中变化快，但别打爆数据源）
+
+_idx_cache = {"ts": 0.0, "data": None}
+_idx_lock = threading.Lock()
+IDX_TTL = 60                # 指数条 60 秒缓存（反爬友好）
+
+# 腾讯自选股榜单备援：EM fid -> 腾讯 sort_type
+_QQ_RANK_MAP = {"f3": "PriceRatio", "f5": "Volume", "f6": "turnover"}
+_QQ_RANK_URL = ("https://proxy.finance.qq.com/cgi/cgi-bin/rank/hs/getBoardRankList"
+                "?board_code=aStock&sort_type=%s&direct=down&offset=0&count=%d")
+
+
+def _index_from_qq():
+    """腾讯指数备援（qt.gtimg.cn，GBK 编码）"""
+    url = "https://qt.gtimg.cn/q=s_sh000001,s_sz399001,s_sz399006,s_sh000688"
+    r = _get(url, config.HEADERS_TX, "qt.gtimg.cn#idx")
+    out = []
+    for line in r.content.decode("gbk", "replace").split(";"):
+        line = line.strip()
+        if "=" not in line:
+            continue
+        f = line.split("=")[1].strip('"').split("~")
+        if len(f) < 6:
+            continue
+        out.append({
+            "code": f[2], "name": f[1],
+            "price": _num(f[3]), "change_amt": _num(f[4]), "change_pct": _num(f[5]),
+        })
+    return out
+
+
+def _rank_from_qq(fid, size):
+    """腾讯自选股榜单备援"""
+    st = _QQ_RANK_MAP.get(fid)
+    if not st:
+        raise RuntimeError("no qq map for " + fid)
+    r = _get(_QQ_RANK_URL % (st, size), config.HEADERS_TX, "proxy.finance.qq.com#rank")
+    rows = ((r.json().get("data") or {}).get("rank_list")) or []
+    out = []
+    for d in rows:
+        code = str(d.get("code") or "")
+        out.append({
+            "symbol": "".join(ch for ch in code if ch.isdigit()),
+            "name": d.get("name"),
+            "price": _num(d.get("zxj")),
+            "change_pct": _num(d.get("zdf")),
+            "volume": _num(d.get("volume")),                  # 手
+            "amount": (_num(d.get("turnover")) or 0) * 1e4 if d.get("turnover") else None,  # 万元 -> 元
+            "turnover": _num(d.get("hsl")),
+            "total_mcap": (_num(d.get("zsz")) or 0) * 1e8 if d.get("zsz") else None,        # 亿 -> 元
+        })
+    return out
+
+
+def fetch_index_snapshot():
+    """大盘指数条：上证指数 / 深证成指 / 创业板指 / 科创50。
+    主源东财 push2，备援腾讯；缓存 60 秒。"""
+    with _idx_lock:
+        if _idx_cache["data"] is not None and time.time() - _idx_cache["ts"] < IDX_TTL:
+            return _idx_cache["data"]
+    try:
+        url = ("https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&invt=2&secids="
+               + _INDEX_SECIDS + "&fields=f12,f14,f2,f3,f4")
+        r = _get(url, config.HEADERS_EM, "push2.eastmoney.com#idx")
+        rows = ((r.json().get("data") or {}).get("diff")) or []
+        out = []
+        for d in rows:
+            out.append({
+                "code": str(d.get("f12", "")),
+                "name": d.get("f14"),
+                "price": d.get("f2"),
+                "change_pct": d.get("f3"),
+                "change_amt": d.get("f4"),
+            })
+        if not out:
+            raise RuntimeError("empty")
+    except Exception:
+        out = _index_from_qq()          # 备援
+    with _idx_lock:
+        _idx_cache.update(ts=time.time(), data=out)
+    return out
+
+
+def fetch_rankings(fid="f3", size=10):
+    """A 股榜单。
+    fid=f3 涨跌幅榜 / f5 成交量榜 / f6 成交额榜（均按降序取前 N）。
+    主源东财 clist，备援腾讯自选股榜单。"""
+    key = "%s:%d" % (fid, size)
+    with _rank_lock:
+        c = _rank_cache.get(key)
+        if c and time.time() - c["ts"] < RANK_TTL:
+            return c["data"]
+    try:
+        url = ("https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=" + str(size)
+               + "&po=1&np=1&fltt=2&invt=2&fid=" + fid
+               + "&fs=" + _FS_ALL_A
+               + "&fields=f12,f14,f2,f3,f5,f6,f8,f20")
+        r = _get(url, config.HEADERS_EM, "push2.eastmoney.com#rank")
+        rows = ((r.json().get("data") or {}).get("diff")) or []
+        out = []
+        for d in rows:
+            out.append({
+                "symbol": str(d.get("f12", "")),
+                "name": d.get("f14"),
+                "price": d.get("f2"),
+                "change_pct": d.get("f3"),
+                "volume": d.get("f5"),
+                "amount": d.get("f6"),
+                "turnover": d.get("f8"),
+                "total_mcap": d.get("f20"),
+            })
+        if not out:
+            raise RuntimeError("empty")
+    except Exception:
+        out = _rank_from_qq(fid, size)   # 备援
+    with _rank_lock:
+        _rank_cache[key] = {"ts": time.time(), "data": out}
+    return out
+
+
 # ============================================================
 #  统一入口：自动选源 + 故障切换
 # ============================================================

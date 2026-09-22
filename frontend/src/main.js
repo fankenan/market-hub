@@ -4,6 +4,7 @@ import 'element-plus/dist/index.css'
 import { createRouter, createWebHistory } from 'vue-router'
 import App from './App.vue'
 import Dashboard from './views/Dashboard.vue'
+import MarketCenter from './views/MarketCenter.vue'
 import Detail from './views/Detail.vue'
 import Portfolio from './views/Portfolio.vue'
 import IpoNew from './views/IpoNew.vue'
@@ -13,7 +14,8 @@ const router = createRouter({
   history: createWebHistory(),
   routes: [
     { path: '/login', component: Login, meta: { public: true } },
-    { path: '/', component: Dashboard },
+    { path: '/', component: MarketCenter },
+    { path: '/watchlist', component: Dashboard },
     { path: '/portfolio', component: Portfolio },
     { path: '/ipo', component: IpoNew },
     { path: '/stock/:symbol', component: Detail },

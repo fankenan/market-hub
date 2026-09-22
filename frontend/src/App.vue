@@ -6,7 +6,8 @@
     <header class="topbar">
       <div class="brand"><span class="logo"></span>Market Hub 自选股</div>
       <nav>
-        <router-link to="/" :class="{ on: $route.path === '/' }">自选</router-link>
+        <router-link to="/" :class="{ on: $route.path === '/' }">行情</router-link>
+        <router-link to="/watchlist" :class="{ on: $route.path === '/watchlist' }">自选</router-link>
         <router-link to="/portfolio" :class="{ on: $route.path === '/portfolio' }">持仓</router-link>
         <router-link to="/ipo" :class="{ on: $route.path === '/ipo' }">新上股票</router-link>
         <router-link

@@ -13,7 +13,8 @@ from pydantic import BaseModel
 import os
 
 from . import config, db, auth, indicators
-from .providers import market, fetch_new_stocks, fetch_company_profile
+from .providers import (market, fetch_new_stocks, fetch_company_profile,
+                        fetch_stock_news, fetch_index_snapshot, fetch_rankings)
 
 app = FastAPI(title="Market Hub", version="1.0.0", docs_url="/api/docs")
 
@@ -226,6 +227,41 @@ def company_profile(symbol: str, user=Depends(get_user)):
         return ok(fetch_company_profile(sym), source="eastmoney")
     except Exception as e:
         raise HTTPException(502, "公司信息获取失败: %s" % e)
+
+
+@app.get("/api/v1/news/{symbol}")
+def stock_news(symbol: str, refresh: int = 0, user=Depends(get_user)):
+    """个股新闻 + 公告（东财双源，15 分钟缓存/股）"""
+    sym = _norm_symbol(symbol)
+    if not sym.isdigit():
+        raise HTTPException(400, "股票代码格式错误")
+    try:
+        return ok(fetch_stock_news(sym, refresh=refresh), source="eastmoney")
+    except Exception as e:
+        raise HTTPException(502, "新闻获取失败: %s" % e)
+
+
+# ==================== 行情中心 ====================
+@app.get("/api/v1/market/index")
+def market_index(user=Depends(get_user)):
+    """大盘指数条：上证指数 / 深证成指 / 创业板指 / 科创50"""
+    try:
+        return ok(fetch_index_snapshot(), source="eastmoney")
+    except Exception as e:
+        raise HTTPException(502, "指数获取失败: %s" % e)
+
+
+@app.get("/api/v1/market/rank")
+def market_rank(type: str = Query("pct", description="pct=涨跌幅 vol=成交量 amt=成交额"),
+                size: int = Query(10, ge=3, le=30), user=Depends(get_user)):
+    """A 股榜单（30 秒缓存）"""
+    fid = {"pct": "f3", "vol": "f5", "amt": "f6"}.get(type)
+    if not fid:
+        raise HTTPException(400, "type 仅支持 pct/vol/amt")
+    try:
+        return ok(fetch_rankings(fid, size), source="eastmoney")
+    except Exception as e:
+        raise HTTPException(502, "榜单获取失败: %s" % e)
 
 
 # ==================== 自选池 ====================

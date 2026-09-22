@@ -132,6 +132,24 @@
             黑色虚线为{{ buyLine.label }}
           </div>
         </div>
+        <div class="panel news-panel">
+          <div class="panel-title news-head">
+            <span>新闻 · 公告</span>
+            <span class="news-tabs">
+              <a :class="{ on: newsTab === 'news' }" @click="newsTab = 'news'">新闻</a>
+              <a :class="{ on: newsTab === 'ann' }" @click="newsTab = 'ann'">公告</a>
+            </span>
+          </div>
+          <div class="news-list" v-if="newsRows.length">
+            <a class="news-item" v-for="n in newsRows" :key="n.url + n.date"
+               :href="n.url" target="_blank" rel="noopener">
+              <div class="nt">{{ n.title }}</div>
+              <div class="nm"><span>{{ n.media }}</span><span>{{ n.date }}</span></div>
+            </a>
+          </div>
+          <div class="tip" v-else-if="newsLoaded">暂无{{ newsTab === 'news' ? '相关新闻' : '公告' }}</div>
+          <div class="tip" v-else>加载中…</div>
+        </div>
         <div class="panel">
           <div class="panel-title">技术指标</div>
           <div class="metrics">
@@ -1203,8 +1221,29 @@ async function loadSrBars() {
 
 async function loadAll() {
   await Promise.all([loadQuote(), loadLive(), loadIndicator(), loadPosition(),
-                     loadSrBars(), loadCompany()])
+                     loadSrBars(), loadCompany(), loadNews()])
   await onViewChange()
+}
+
+// ---------- 新闻 · 公告 ----------
+const newsTab = ref('news')
+const newsData = ref({ news: [], announcements: [] })
+const newsLoaded = ref(false)
+
+const newsRows = computed(() => {
+  const d = newsData.value || {}
+  return (newsTab.value === 'news' ? d.news : d.announcements) || []
+})
+
+async function loadNews() {
+  try {
+    const r = await api.get('/news/' + symbol.value)
+    newsData.value = r.data || { news: [], announcements: [] }
+  } catch (e) {
+    newsData.value = { news: [], announcements: [] }
+  } finally {
+    newsLoaded.value = true
+  }
 }
 
 // ---------- 公司信息（F10） ----------
@@ -1392,20 +1431,25 @@ h2 { font-size: 17px; margin: 0 0 2px; font-weight: 600; display: inline-block; 
 .src { font-size: 11px; color: #a8adb6; margin-left: 4px; }
 
 .qh-metrics {
-  flex: 1; min-width: 660px; max-width: 900px;
-  display: grid; grid-template-columns: repeat(4, 1fr); gap: 0 20px;
+  flex: 1; min-width: 560px; max-width: 980px;
+  display: grid; grid-template-columns: repeat(5, 1fr); gap: 0 16px;
   align-content: center;
   grid-auto-flow: column;
-  grid-template-rows: repeat(7, auto);
+  grid-template-rows: repeat(5, auto);
 }
 .kv {
   display: flex; justify-content: space-between; align-items: baseline;
   padding: 3.5px 0; border-bottom: 1px dashed #f0f2f6;
   gap: 8px;
 }
-.kv:nth-last-child(-n+4) { border-bottom: none; }
+.kv:nth-last-child(-n+5) { border-bottom: none; }
 .mk { font-size: 12px; color: #8a94a6; white-space: nowrap; }
 .mv { font-size: 13px; font-weight: 500; }
+@media (max-width: 1200px) {
+  .qh-metrics { grid-template-columns: repeat(4, 1fr); grid-template-rows: repeat(7, auto); min-width: 480px; }
+  .kv:nth-last-child(-n+5) { border-bottom: 1px dashed #f0f2f6; }
+  .kv:nth-last-child(-n+4) { border-bottom: none; }
+}
 
 /* ---- 主体 ---- */
 .grid { display: grid; grid-template-columns: minmax(0, 1fr) 230px; gap: 12px; }
@@ -1456,6 +1500,31 @@ h2 { font-size: 17px; margin: 0 0 2px; font-weight: 600; display: inline-block; 
   display: inline-block; min-width: 15px; text-align: center;
   font-size: 10px; font-weight: 700; color: #fff;
   border-radius: 3px; padding: 0 3px; line-height: 15px;
+}
+
+/* ---- 新闻 · 公告面板 ---- */
+.news-head { display: flex; align-items: center; justify-content: space-between; }
+.news-tabs { display: flex; gap: 2px; }
+.news-tabs a {
+  font-size: 11px; font-weight: 400; color: #8a94a6; cursor: pointer;
+  padding: 1px 8px; border-radius: 10px; user-select: none;
+}
+.news-tabs a.on { color: #1f2d3d; background: #eef2f7; font-weight: 500; }
+.news-list { display: flex; flex-direction: column; max-height: 420px; overflow-y: auto; }
+.news-item {
+  display: block; text-decoration: none; padding: 7px 0;
+  border-bottom: 1px dashed #f0f2f6; cursor: pointer;
+}
+.news-item:last-child { border-bottom: none; }
+.news-item .nt {
+  font-size: 12px; color: #1f2d3d; line-height: 1.45;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.news-item:hover .nt { color: #2f6fed; }
+.news-item .nm {
+  margin-top: 3px; display: flex; justify-content: space-between;
+  font-size: 10px; color: #a8adb6;
 }
 .tag.b { background: #e64545; }
 .tag.s { background: #2fa36b; }
